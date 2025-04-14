@@ -126,12 +126,12 @@ fn main() {
         row_data.insert("name".to_string(), "yes".to_string());
         row_data.insert("age".to_string(), "100".to_string());
         row_data.insert("email".to_string(), "xyz@.com".to_string());
-        db_lock.insert_row("users", "1", row_data).unwrap();
+        db_lock.insert_row_with_datatype("users", "1", row_data).unwrap();
         let mut row_data = std::collections::HashMap::new();
         row_data.insert("name".to_string(), "no".to_string());
         row_data.insert("age".to_string(), "1".to_string());
         row_data.insert("email".to_string(), "x@.com".to_string());
-        db_lock.insert_row("users", "2", row_data).unwrap();
+        db_lock.insert_row_with_datatype("users", "2", row_data).unwrap();
         
         db_lock.save_table("users", "users.csv").unwrap();
 

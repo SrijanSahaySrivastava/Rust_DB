@@ -208,13 +208,17 @@ impl Database {
 
         // Insert a single new row that contains the datatypes for each new column.
         let mut data = HashMap::new();
+        let table = self.tables.get_mut(table_name).ok_or(DatabaseError::TableDoesNotExist(table_name.to_string()))?;
         for (col, dt) in column_names.iter().zip(datatypes.iter()){
             data.insert(col.to_string(), dt.to_string());
+            table.add_datatype(col, dt);
         }
         match self.insert_row(table_name, "datatypes", data) {
             Ok(res) => results.push(res),
             Err(e) => return Err(e),
         }
+
+
 
         Ok(results)
     }
@@ -272,20 +276,20 @@ impl Database {
             }
         }
 
-        //check for datatype
-        for (col, val) in &data {
-            if let Some(table) = self.tables.get(table_name) {
-                if let Some(dt) = table.row_datatypes.get(col) {
-                    if !Database::check_value_matches(val, dt) {
-                        error!("Value '{}' does not match datatype '{}' for column '{}'.", val, dt, col);
-                        return Err(DatabaseError::DataTypeError);
-                    }
-                } else {
-                    error!("Column '{}' not found in table '{}'.", col, table_name);
-                    return Err(DatabaseError::RowDoesNotExist(row_id.to_string(), table_name.to_string()));
-                }
-            }
-        }
+        // //check for datatype
+        // for (col, val) in &data {
+        //     if let Some(table) = self.tables.get(table_name) {
+        //         if let Some(dt) = table.row_datatypes.get(col) {
+        //             if !Database::check_value_matches(val, dt) {
+        //                 error!("Value '{}' does not match datatype '{}' for column '{}'.", val, dt, col);
+        //                 return Err(DatabaseError::DataTypeError);
+        //             }
+        //         } else {
+        //             error!("Column '{}' not found in table '{}'.", col, table_name);
+        //             return Err(DatabaseError::RowDoesNotExist(row_id.to_string(), table_name.to_string()));
+        //         }
+        //     }
+        // }
 
         // Now perform the row insertion.
         if let Some(table) = self.tables.get_mut(table_name) {
@@ -314,9 +318,49 @@ impl Database {
         }
     }
 
+    pub fn insert_row_with_datatype(&mut self, table_name: &str, row_id: &str, data: HashMap<String, String> ) -> Result<Vec<Vec<String>>>  {
+        if !self.check_table(table_name) {
+            // Table not found: try to load it from file.
+            let file_name = format!("{}.csv", table_name);
+            if fs::metadata(&file_name).is_ok() {
+                match self.load_table_from_file(table_name, &file_name) {
+                    Ok(_) => println!("Table '{}' loaded from file '{}'.", table_name, file_name),
+                    Err(e) => {
+                        error!("Failed to load table from file: {}", e);
+                        return Err(e);
+                    }
+                }
+            } else {
+                error!("Table '{}' does not exist in memory or on disk.", table_name);
+                return Err(DatabaseError::TableDoesNotExist(table_name.to_string()));
+            }
+        }
+        let table = self.tables.get_mut(table_name).ok_or(DatabaseError::TableDoesNotExist(table_name.to_string()))?;
+        //check if the row_id already exists
+        if let Some(existing_row) = table.get_row(row_id) {
+            error!("Row '{}' already exists in table '{}'.", row_id, table_name);
+            return Err(DatabaseError::RowDoesNotExist(row_id.to_string(), table_name.to_string()));
+        }
+
+        //check for datatype
+        for (col, val) in &data {
+            if let Some(dt) = table.row_datatypes.get(col) {
+                if !Database::check_value_matches(val, dt) {
+                    error!("Value '{}' does not match datatype '{}' for column '{}'.", val, dt, col);
+                    return Err(DatabaseError::DataTypeError);
+                }
+            } else {
+                error!("Column '{}' not found in table '{}'.", col, table_name);
+                return Err(DatabaseError::RowDoesNotExist(row_id.to_string(), table_name.to_string()));
+            }
+        }
+        // Now perform the row insertion.
+        let result = self.insert_row(table_name, row_id, data)?;
+        Ok(vec![result])
+    }
+
     // Update a value in a row for a specific column.
     pub fn update_row(&mut self, table_name: &str, row_id: &str, column_name: &str, new_value: &str) -> Result<Vec<String>> {
-        // Ensure the table is in memory, loading from file if needed.
         if !self.check_table(table_name) {
             let file_name = format!("{}.csv", table_name);
             if fs::metadata(&file_name).is_ok() {

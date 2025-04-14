@@ -24,6 +24,11 @@ impl Table {
 
 
     pub fn add_datatype(&mut self, column_name: &str, datatype: &str) {
+        if self.row_datatypes.contains_key(column_name) {
+            println!(" - already exists");
+            return;
+        }
+        println!("Adding datatype {} to column {}", datatype, column_name);
         self.row_datatypes.insert(column_name.to_string(), datatype.to_string());
     }
 
