@@ -1,6 +1,4 @@
-row_id,ag,age,email,name
-1,,100,xyz@.com,yes
-2,,5,y@.com,Alice
-3,,5,x@.com,Alice
-4,,10,x@.com,Alice
-5,,5,x@.com,Alice
+row_id,age,email,name
+datatypes,int,string,string
+1,100,xyz@.com,yes
+2,1,x@.com,no

@@ -1,4 +1,4 @@
-//// filepath: c:\Users\srija\Documents\GitHub\Rust_DB\testing\src\main.rs
+
 #[warn(unused_imports)]
 use std::fs;
 use env_logger;
@@ -107,22 +107,33 @@ fn main() {
     // Simulate database operations
     {
         let mut db_lock = db.lock().unwrap();
-        test_entire_db(&mut db_lock);
+        // test_entire_db(&mut db_lock);
         db_lock.commit_wal().unwrap();
-        // db_lock.create_table("users").unwrap();
-        // db_lock.flush_wal().unwrap();
+        db_lock.create_table("users").unwrap();
+        db_lock.flush_wal().unwrap();
     
         // db_lock.add_column("users", "name").unwrap();
         // db_lock.add_column("users", "age").unwrap();
         // db_lock.add_column("users", "email").unwrap();
+
+        let column_names = vec!["name", "age", "email"];
+        let column_types = vec!["string", "int", "string"];
+        db_lock.add_columns("users", column_names, column_types).unwrap();
+        db_lock.flush_wal().unwrap();
+
+
+        let mut row_data = std::collections::HashMap::new();
+        row_data.insert("name".to_string(), "yes".to_string());
+        row_data.insert("age".to_string(), "100".to_string());
+        row_data.insert("email".to_string(), "xyz@.com".to_string());
+        db_lock.insert_row("users", "1", row_data).unwrap();
+        let mut row_data = std::collections::HashMap::new();
+        row_data.insert("name".to_string(), "no".to_string());
+        row_data.insert("age".to_string(), "1".to_string());
+        row_data.insert("email".to_string(), "x@.com".to_string());
+        db_lock.insert_row("users", "2", row_data).unwrap();
         
-        // let mut row_data = std::collections::HashMap::new();
-        // row_data.insert("name".to_string(), "yes".to_string());
-        // row_data.insert("age".to_string(), "100".to_string());
-        // row_data.insert("email".to_string(), "xyz@.com".to_string());
-        // // db_lock.insert_row("users", "1", row_data).unwrap();
-        
-        // // db_lock.save_table("users", "users.csv").unwrap();
+        db_lock.save_table("users", "users.csv").unwrap();
 
         // db_lock.update_row("users", "4", "age", "10").unwrap();
         // db_lock.update_row("users", "2", "email", "y@.com").unwrap();
@@ -133,10 +144,10 @@ fn main() {
         //     Err(e) => eprintln!("Error: {}", e),
         // }
 
-        // match db_lock.get_table("users") {
-        //     Ok(table) => println!("Table: {}", table),
-        //     Err(e) => eprintln!("Error: {}", e),
-        // }
+        match db_lock.get_table("users") {
+            Ok(table) => println!("Table: {}", table),
+            Err(e) => eprintln!("Error: {}", e),
+        }
 
         // match db_lock.search_rows_by_condition_in_table("users", "age < 10") {
         //     Ok(rows) => println!("Rows: {:?}", rows),

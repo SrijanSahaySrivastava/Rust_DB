@@ -5,6 +5,7 @@ use std::fmt;
 pub struct Table {
     pub columns: HashSet<String>,  // List of allowed column names
     pub rows: BTreeMap<String, HashMap<String, String>>, // row_id -> { column_name -> value }
+    pub row_datatypes: HashMap<String, String>, // column_name -> datatype
 }
 
 impl Table {
@@ -12,12 +13,18 @@ impl Table {
         Table {
             columns: HashSet::new(),
             rows: BTreeMap::new(),
+            row_datatypes: HashMap::new(),
         }
     }
 
     /// Add a new column to the table. Existing rows do not automatically get a value for this column.
     pub fn add_column(&mut self, column_name: &str) {
         self.columns.insert(column_name.to_string());
+    }
+
+
+    pub fn add_datatype(&mut self, column_name: &str, datatype: &str) {
+        self.row_datatypes.insert(column_name.to_string(), datatype.to_string());
     }
 
     /// Insert or update a row with (column -> value) pairs; restrict columns to those known in `columns`.

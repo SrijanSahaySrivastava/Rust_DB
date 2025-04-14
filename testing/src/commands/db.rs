@@ -21,6 +21,10 @@ pub enum DatabaseError {
     RowNotFound(String, String),
     #[error("Error creating file '{0}': {1}")]
     FileCreationError(String, String),
+    #[error("datatype error")]
+    DataTypeError,
+    #[error("Invalid datatype provided.")]
+    InvalidDataType,
 }
 
 pub type Result<T> = std::result::Result<T, DatabaseError>;
@@ -31,6 +35,7 @@ pub struct Database {
     pub save_threshold: usize,
     pub wal: Vec<String>,
     pub wal_file: String,
+    pub datatypes: Vec<String>,
 }
 
 impl Database {
@@ -41,6 +46,8 @@ impl Database {
             save_threshold: 5,
             wal: Vec::new(),
             wal_file: "wal.log".to_string(),
+            datatypes: vec!["int".to_string(), "float".to_string(), "string".to_string(), "bool".to_string()],
+
         }
     }
 
@@ -138,6 +145,80 @@ impl Database {
         }
     }
 
+    #[allow(dead_code)]
+    fn valid_datatype(dt: &str) -> bool {
+        match dt {
+            "int" | "float" | "string" => true,
+            _ => false,
+        }
+    }
+    #[allow(dead_code)]
+    fn check_value_matches(value: &str, dtype: &str) -> bool {
+        match dtype {
+            "int" => value.parse::<i64>().is_ok(),
+            "float" => value.parse::<f64>().is_ok(),
+            "bool" => {
+                let lower = value.to_lowercase();
+                lower == "true" || lower == "false"
+            },
+            "string" => true,
+            _ => false,
+        }
+    }
+    #[allow(dead_code)]
+    fn is_subset_vec_str(&self, a: &Vec<&str>) -> bool {
+        a.iter().all(|&dt| self.datatypes.contains(&dt.to_string()))
+    }
+    pub fn add_columns(&mut self, table_name: &str, column_names: Vec<&str>, datatypes: Vec<&str>) -> Result<Vec<Vec<String>>> {
+        if column_names.len() != datatypes.len() {
+            error!("Column names and datatypes must have the same length.");
+            return Err(DatabaseError::DataTypeError);
+        }
+        
+        if !self.check_table(table_name) {
+            // Table not found: try to load it from file.
+            let file_name = format!("{}.csv", table_name);
+            if fs::metadata(&file_name).is_ok() {
+                match self.load_table_from_file(table_name, &file_name) {
+                    Ok(_) => println!("Table '{}' loaded from file '{}'.", table_name, file_name),
+                    Err(e) => {
+                        error!("Failed to load table from file: {}", e);
+                        return Err(e);
+                    }
+                }
+            } else {
+                error!("Table '{}' does not exist in memory or on disk.", table_name);
+                return Err(DatabaseError::TableDoesNotExist(table_name.to_string()));
+            }
+        }
+        if Database::is_subset_vec_str(self, &datatypes) == false {
+            error!("Invalid datatypes provided.");
+            return Err(DatabaseError::InvalidDataType);
+        }
+        
+        let mut results = Vec::new();
+
+        // Add the new columns.
+        for col in column_names.iter() {
+            match self.add_column(table_name, col) {
+                Ok(res) => results.push(res),
+                Err(e) => return Err(e),
+            }
+        }
+
+        // Insert a single new row that contains the datatypes for each new column.
+        let mut data = HashMap::new();
+        for (col, dt) in column_names.iter().zip(datatypes.iter()){
+            data.insert(col.to_string(), dt.to_string());
+        }
+        match self.insert_row(table_name, "datatypes", data) {
+            Ok(res) => results.push(res),
+            Err(e) => return Err(e),
+        }
+
+        Ok(results)
+    }
+
     // Get row from table.
     pub fn get_row(&mut self, table_name: &str, row_id: &str) -> Result<Vec<String>> {
         // If the table isn't in memory, try to load it from file.
@@ -190,6 +271,22 @@ impl Database {
                 return Err(DatabaseError::TableDoesNotExist(table_name.to_string()));
             }
         }
+
+        //check for datatype
+        for (col, val) in &data {
+            if let Some(table) = self.tables.get(table_name) {
+                if let Some(dt) = table.row_datatypes.get(col) {
+                    if !Database::check_value_matches(val, dt) {
+                        error!("Value '{}' does not match datatype '{}' for column '{}'.", val, dt, col);
+                        return Err(DatabaseError::DataTypeError);
+                    }
+                } else {
+                    error!("Column '{}' not found in table '{}'.", col, table_name);
+                    return Err(DatabaseError::RowDoesNotExist(row_id.to_string(), table_name.to_string()));
+                }
+            }
+        }
+
         // Now perform the row insertion.
         if let Some(table) = self.tables.get_mut(table_name) {
             table.insert_row(row_id, data.clone());
@@ -280,19 +377,38 @@ impl Database {
     pub fn save_table(&self, table_name: &str, file_name: &str) -> Result<Vec<String>> {
         match self.tables.get(table_name) {
             Some(table) => {
+                // Get columns sorted.
                 let mut columns_in_order: Vec<_> = table.columns.iter().cloned().collect();
                 columns_in_order.sort();
+    
                 let file_result = File::create(file_name);
                 match file_result {
                     Ok(file) => {
                         let mut writer = BufWriter::new(file);
+                        // Write header.
                         let header = {
                             let mut hdr = vec!["row_id".to_string()];
                             hdr.extend(columns_in_order.iter().cloned());
                             hdr.join(",")
                         };
                         writeln!(writer, "{}", header).unwrap();
-                        for (row_id, row_data) in &table.rows {
+    
+                        // If a "datatypes" row exists, write it as the second row.
+                        if let Some(datatype_row) = table.rows.get("datatypes") {
+                            let mut row_vec = vec!["datatypes".to_string()];
+                            for col in &columns_in_order {
+                                row_vec.push(datatype_row.get(col).cloned().unwrap_or_default());
+                            }
+                            writeln!(writer, "{}", row_vec.join(",")).unwrap();
+                        }
+    
+                        // Write all other rows (exclude "datatypes").
+                        let mut rows: Vec<_> = table.rows
+                            .iter()
+                            .filter(|(row_id, _)| *row_id != "datatypes")
+                            .collect();
+                        rows.sort_by_key(|(row_id, _)| row_id.to_string());
+                        for (row_id, row_data) in rows {
                             let mut row_vec = vec![row_id.clone()];
                             for col in &columns_in_order {
                                 row_vec.push(row_data.get(col).cloned().unwrap_or_default());
