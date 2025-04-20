@@ -3,7 +3,9 @@ use crate::table::table::Table;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Write, BufWriter, BufRead, BufReader};
+use crate::walwriter;
 use std::fs;
+use std::path::Path;
 use thiserror::Error;
 use log::{info, error};
 use serde_json;
@@ -36,6 +38,8 @@ pub struct Database {
     pub wal: Vec<String>,
     pub wal_file: String,
     pub datatypes: Vec<String>,
+    pub saved_row_count: usize,
+    pub wal_writer: Option<walwriter::WalWriter>,
 }
 
 impl Database {
@@ -47,7 +51,8 @@ impl Database {
             wal: Vec::new(),
             wal_file: "wal.log".to_string(),
             datatypes: vec!["int".to_string(), "float".to_string(), "string".to_string(), "bool".to_string()],
-
+            wal_writer: None,
+            saved_row_count: 0,
         }
     }
 
@@ -136,7 +141,12 @@ impl Database {
         if let Some(table) = self.tables.get_mut(table_name) {
             table.add_column(column_name);
             let op = format!("add_column:{}:{}", table_name, column_name);
-            self.wal.push(op.clone());
+            // self.wal.push(op);
+            if let Some(ref writer) = self.wal_writer {
+                writer.log(op);
+            } else {
+                self.wal.push(op);
+            }
             println!("Column '{}' added to table '{}' and logged to WAL", column_name, table_name);
             Ok(vec![column_name.to_string(), table_name.to_string()])
         } else {
@@ -300,13 +310,18 @@ impl Database {
                 row_id,
                 serde_json::to_string(&data).unwrap()
             );
-            self.wal.push(op);
+            // self.wal.push(op);
+            if let Some(ref writer) = self.wal_writer {
+                writer.log(op);
+            } else {
+                self.wal.push(op);
+            }
             println!("Inserted row '{}' in table '{}' and logged to WAL", row_id, table_name);
     
             self.operations_since_save += 1;
             if self.operations_since_save >= self.save_threshold {
                 let file_name = format!("{}.csv", table_name);
-                if let Err(e) = self.save_table(table_name, &file_name) {
+                if let Err(e) = self.save_table_for_insert(table_name, &file_name) {
                     error!("Failed to save table '{}': {}", table_name, e);
                 }
                 self.operations_since_save = 0;
@@ -395,7 +410,12 @@ impl Database {
                     column_name,
                     serde_json::to_string(new_value).unwrap()
                 );
-                self.wal.push(op);
+                // self.wal.push(op);
+                if let Some(ref writer) = self.wal_writer {
+                    writer.log(op);
+                } else {
+                    self.wal.push(op);
+                }
                 println!("Updated row '{}' in table '{}', column '{}' set to '{}'.", row_id, table_name, column_name, new_value);
                 self.save_table(table_name, &format!("{}.csv", table_name))?;
                 self.operations_since_save += 1;
@@ -413,6 +433,61 @@ impl Database {
             }
         } else {
             error!("Table '{}' is still not found after attempting to load.", table_name);
+            Err(DatabaseError::TableDoesNotExist(table_name.to_string()))
+        }
+    }
+
+    pub fn save_table_for_insert(&mut self, table_name: &str, file_name: &str) -> Result<Vec<String>> {
+        if let Some(table) = self.tables.get(table_name) {
+            // Get columns sorted.
+            let mut columns_in_order: Vec<_> = table.columns.iter().cloned().collect();
+            columns_in_order.sort();
+    
+            let path = Path::new(file_name);
+            let mut writer: BufWriter<Box<dyn Write>>;
+    
+            if path.exists() {
+                // Open in append mode.
+                let file = OpenOptions::new()
+                    .append(true)
+                    .open(file_name)
+                    .map_err(|e| DatabaseError::FileCreationError(file_name.to_string(), e.to_string()))?;
+                writer = BufWriter::new(Box::new(file));
+            } else {
+                // Create new file and write header.
+                let file = File::create(file_name)
+                    .map_err(|e| DatabaseError::FileCreationError(file_name.to_string(), e.to_string()))?;
+                writer  = BufWriter::new(Box::new(file));
+                let header = {
+                    let mut hdr = vec!["row_id".to_string()];
+                    hdr.extend(columns_in_order.iter().cloned());
+                    hdr.join(",")
+                };
+                writeln!(writer, "{}", header).unwrap();
+            }
+    
+            // Get only the unsaved rows.
+            let unsaved_rows: Vec<(&String, &HashMap<String, String>)> = table.rows
+                .iter()
+                .skip(self.saved_row_count)
+                .filter(|(row_id, _)| *row_id != "datatypes")
+                .collect();
+    
+            for (row_id, row_data) in unsaved_rows.iter() {
+                let mut row_vec = vec![(*row_id).clone()];
+                for col in &columns_in_order {
+                    row_vec.push(row_data.get(col).cloned().unwrap_or_default());
+                }
+                writeln!(writer, "{}", row_vec.join(",")).unwrap();
+            }
+            writer.flush().unwrap();
+    
+            // Update the saved row count.
+            self.saved_row_count = table.rows.len();
+            println!("Table '{}' appended to '{}' with {} new rows.", table_name, file_name, unsaved_rows.len());
+            Ok(vec![table_name.to_string(), file_name.to_string()])
+        } else {
+            error!("Table '{}' does not exist.", table_name);
             Err(DatabaseError::TableDoesNotExist(table_name.to_string()))
         }
     }

@@ -1,18 +1,16 @@
-
+use env_logger;
 #[warn(unused_imports)]
 use std::fs;
-use env_logger;
 pub mod table;
 
 mod commands;
 const FOLDER_PATH: &str = "./src/commands";
-use commands::{command1, command2, db, walengine};
+use commands::{db, walengine, walwriter};
 
-
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 // fn get_command_names() -> Vec<String> {
 //     let folder_path = FOLDER_PATH;
@@ -38,7 +36,7 @@ use std::thread;
 use rand::Rng;
 use std::collections::HashMap;
 use std::time::Instant;
-  
+
 fn test_entire_db(db: &mut db::Database) {
     // Time table creation and adding columns.
     let start_table = Instant::now();
@@ -47,10 +45,13 @@ fn test_entire_db(db: &mut db::Database) {
     db.add_column("test_table", "age").unwrap();
     db.add_column("test_table", "email").unwrap();
     let duration_table = start_table.elapsed();
-    println!("Table creation and column addition took: {:?}", duration_table);
-    
+    println!(
+        "Table creation and column addition took: {:?}",
+        duration_table
+    );
+
     let mut rng = rand::thread_rng();
-    
+
     // Time bulk insertion.
     let start_insert = Instant::now();
     for i in 0..10_000 {
@@ -58,22 +59,22 @@ fn test_entire_db(db: &mut db::Database) {
         let name = format!("User_{:05}", rng.gen_range(1..100000));
         let age = rng.gen_range(18..=80).to_string();
         let email = format!("user{}@example.com", rng.gen_range(1..100000));
-    
+
         let mut row_data = std::collections::HashMap::new();
         row_data.insert("name".to_string(), name);
         row_data.insert("age".to_string(), age);
         row_data.insert("email".to_string(), email);
-    
+
         db.insert_row("test_table", &id, row_data).unwrap();
     }
     let duration_insert = start_insert.elapsed();
     println!("Insertion of 10,000 rows took: {:?}", duration_insert);
-    
+
     // Time random searches.
     let start_search = Instant::now();
     for _ in 0..5 {
         let random_age = rng.gen_range(18..=80).to_string();
-        match db.find_rows_by_value_in_table("test_table", "age", &random_age, false) {
+        match db.find_rows_by_value_in_table("test_table", "age", &random_age, true) {
             Ok(rows) => println!("Search for age {}: found {} rows", random_age, rows.len()),
             Err(e) => println!("Search error: {}", e),
         }
@@ -100,6 +101,18 @@ fn main() {
         }
     }
 
+    // Setup the asynchronous WAL writer:
+    // Create the WAL writer with a batch interval of 1 second.
+    let (wal_writer_instance, wal_writer_handle) =
+        walwriter::WalWriter::new(Duration::from_secs(1));
+    {
+        // Inject the wal_writer into the database.
+        let mut db_lock = db.lock().unwrap();
+        db_lock.wal_writer = Some(wal_writer_instance);
+    }
+    // Start the asynchronous WAL writer thread.
+    wal_writer_handle.start("wal.log".to_string());
+
     // Start the WAL engine to persist/replay WAL periodically
     let wal_engine = walengine::WalEngine::new(Arc::clone(&db), Duration::from_secs(10));
     thread::spawn(move || wal_engine.start());
@@ -107,60 +120,59 @@ fn main() {
     // Simulate database operations
     {
         let mut db_lock = db.lock().unwrap();
+        test_entire_db(&mut *db_lock);
         // test_entire_db(&mut db_lock);
-        db_lock.commit_wal().unwrap();
-        db_lock.create_table("users").unwrap();
-        db_lock.flush_wal().unwrap();
-    
-        // db_lock.add_column("users", "name").unwrap();
-        // db_lock.add_column("users", "age").unwrap();
-        // db_lock.add_column("users", "email").unwrap();
-
-        let column_names = vec!["name", "age", "email"];
-        let column_types = vec!["string", "int", "string"];
-        db_lock.add_columns("users", column_names, column_types).unwrap();
-        db_lock.flush_wal().unwrap();
-
-
-        let mut row_data = std::collections::HashMap::new();
-        row_data.insert("name".to_string(), "yes".to_string());
-        row_data.insert("age".to_string(), "100".to_string());
-        row_data.insert("email".to_string(), "xyz@.com".to_string());
-        db_lock.insert_row_with_datatype("users", "1", row_data).unwrap();
-        let mut row_data = std::collections::HashMap::new();
-        row_data.insert("name".to_string(), "no".to_string());
-        row_data.insert("age".to_string(), "1".to_string());
-        row_data.insert("email".to_string(), "x@.com".to_string());
-        db_lock.insert_row_with_datatype("users", "2", row_data).unwrap();
-        
-        db_lock.save_table("users", "users.csv").unwrap();
-
-        // db_lock.update_row("users", "4", "age", "10").unwrap();
-        // db_lock.update_row("users", "2", "email", "y@.com").unwrap();
-
-
-        // match db_lock.get_row("users", "1") {
-        //     Ok(row) => println!("Row: {:?}", row),
-        //     Err(e) => eprintln!("Error: {}", e),
-        // }
-
-        match db_lock.get_table("users") {
-            Ok(table) => println!("Table: {}", table),
-            Err(e) => eprintln!("Error: {}", e),
-        }
-
-        // match db_lock.search_rows_by_condition_in_table("users", "age < 10") {
-        //     Ok(rows) => println!("Rows: {:?}", rows),
-        //     Err(e) => eprintln!("Error: {}", e),
-        // }
-
-        // match db_lock.find_rows_by_value_in_table("users", "age", "5", false) {
-        //     Ok(rows) => println!("Rows: {:?}", rows),
-        //     Err(e) => eprintln!("Error: {}", e),
-        // }
-        // // Optionally, perform a manual commit here if needed:
-        // // db_lock.flush_wal().unwrap();
         // db_lock.commit_wal().unwrap();
+        // db_lock.create_table("users").unwrap();
+        // db_lock.flush_wal().unwrap();
+
+        // // db_lock.add_column("users", "name").unwrap();
+        // // db_lock.add_column("users", "age").unwrap();
+        // // db_lock.add_column("users", "email").unwrap();
+
+        // let column_names = vec!["name", "age", "email"];
+        // let column_types = vec!["string", "int", "string"];
+        // db_lock.add_columns("users", column_names, column_types).unwrap();
+        // db_lock.flush_wal().unwrap();
+
+        // let mut row_data = std::collections::HashMap::new();
+        // row_data.insert("name".to_string(), "yes".to_string());
+        // row_data.insert("age".to_string(), "100".to_string());
+        // row_data.insert("email".to_string(), "xyz@.com".to_string());
+        // db_lock.insert_row_with_datatype("users", "1", row_data).unwrap();
+        // let mut row_data = std::collections::HashMap::new();
+        // row_data.insert("name".to_string(), "no".to_string());
+        // row_data.insert("age".to_string(), "1".to_string());
+        // row_data.insert("email".to_string(), "x@.com".to_string());
+        // db_lock.insert_row_with_datatype("users", "2", row_data).unwrap();
+
+        // db_lock.save_table("users", "users.csv").unwrap();
+
+        // // db_lock.update_row("users", "4", "age", "10").unwrap();
+        // // db_lock.update_row("users", "2", "email", "y@.com").unwrap();
+
+        // // match db_lock.get_row("users", "1") {
+        // //     Ok(row) => println!("Row: {:?}", row),
+        // //     Err(e) => eprintln!("Error: {}", e),
+        // // }
+
+        // match db_lock.get_table("users") {
+        //     Ok(table) => println!("Table: {}", table),
+        //     Err(e) => eprintln!("Error: {}", e),
+        // }
+
+        // // match db_lock.search_rows_by_condition_in_table("users", "age < 10") {
+        // //     Ok(rows) => println!("Rows: {:?}", rows),
+        // //     Err(e) => eprintln!("Error: {}", e),
+        // // }
+
+        // // match db_lock.find_rows_by_value_in_table("users", "age", "5", false) {
+        // //     Ok(rows) => println!("Rows: {:?}", rows),
+        // //     Err(e) => eprintln!("Error: {}", e),
+        // // }
+        // // // Optionally, perform a manual commit here if needed:
+        // // // db_lock.flush_wal().unwrap();
+        // // db_lock.commit_wal().unwrap();
     }
 
     // Run for a finite duration then exit.

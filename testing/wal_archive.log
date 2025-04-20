@@ -1,14 +1,1 @@
-create_table:users
-add_column:users:name
-add_column:users:age
-add_column:users:email
-insert_row:users:datatypes:{"email":"string","name":"string","age":"int"}
-insert_row:users:1:{"name":"yes","age":"100","email":"xyz@.com"}
-insert_row:users:2:{"name":"no","age":"1","email":"x@.com"}
-create_table:users
-add_column:users:name
-add_column:users:age
-add_column:users:email
-insert_row:users:datatypes:{"name":"string","email":"string","age":"int"}
-insert_row:users:1:{"email":"xyz@.com","name":"yes","age":"100"}
-insert_row:users:2:{"name":"no","email":"x@.com","age":"1"}
+create_table:test_table
