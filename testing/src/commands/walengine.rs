@@ -1,9 +1,9 @@
 //// filepath: c:\Users\srija\Documents\GitHub\Rust_DB\testing\src\commands\walengine.rs
+use super::db::Database;
+use log::{error, info};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use log::{info, error};
-use super::db::Database;
 
 pub struct WalEngine {
     db: Arc<Mutex<Database>>,
@@ -18,11 +18,13 @@ impl WalEngine {
     pub fn start(&self) {
         let db_clone = Arc::clone(&self.db);
         let interval = self.interval;
-
         thread::spawn(move || {
             loop {
                 {
-                    let mut db = db_clone.lock().unwrap();
+                    // Recover from a poisoned mutex by taking the inner value.
+                    let mut db = db_clone
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
                     // Persist the working WAL.
                     if let Err(e) = db.persist_wal() {
                         error!("Failed to persist WAL: {}", e);
@@ -35,7 +37,7 @@ impl WalEngine {
                     } else {
                         info!("WAL replayed successfully.");
                     }
-                    // Now commit the WAL: archive the logged operations and clear the working log.
+                    // Commit the WAL.
                     if let Err(e) = db.commit_wal() {
                         error!("Failed to commit WAL: {}", e);
                     } else {

@@ -1,3 +1,4 @@
+use core::num;
 use env_logger;
 #[warn(unused_imports)]
 use std::fs;
@@ -5,6 +6,7 @@ pub mod table;
 
 mod commands;
 const FOLDER_PATH: &str = "./src/commands";
+use commands::indexer_engine::IndexEngine;
 use commands::{db, walengine, walwriter};
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -37,7 +39,7 @@ use rand::Rng;
 use std::collections::HashMap;
 use std::time::Instant;
 
-fn test_entire_db(db: &mut db::Database) {
+fn test_entire_db(db: &mut db::Database, num_rows: usize) {
     // Time table creation and adding columns.
     let start_table = Instant::now();
     db.create_table("test_table").unwrap();
@@ -54,7 +56,7 @@ fn test_entire_db(db: &mut db::Database) {
 
     // Time bulk insertion.
     let start_insert = Instant::now();
-    for i in 0..10_000 {
+    for i in 0..num_rows {
         let id = i.to_string();
         let name = format!("User_{:05}", rng.gen_range(1..100000));
         let age = rng.gen_range(18..=80).to_string();
@@ -68,7 +70,7 @@ fn test_entire_db(db: &mut db::Database) {
         db.insert_row("test_table", &id, row_data).unwrap();
     }
     let duration_insert = start_insert.elapsed();
-    println!("Insertion of 10,000 rows took: {:?}", duration_insert);
+    println!("Insertion of {} rows took: {:?}", num_rows, duration_insert);
 
     // Time random searches.
     let start_search = Instant::now();
@@ -117,10 +119,14 @@ fn main() {
     let wal_engine = walengine::WalEngine::new(Arc::clone(&db), Duration::from_secs(10));
     thread::spawn(move || wal_engine.start());
 
+    // Start the Index and Bloom Engine to rebuild indexes and bloom filter periodically.
+    let index_engine = IndexEngine::new(Arc::clone(&db), Duration::from_secs(15));
+    index_engine.start();
+
     // Simulate database operations
     {
         let mut db_lock = db.lock().unwrap();
-        test_entire_db(&mut *db_lock);
+        test_entire_db(&mut *db_lock, 100_000);
         // test_entire_db(&mut db_lock);
         // db_lock.commit_wal().unwrap();
         // db_lock.create_table("users").unwrap();

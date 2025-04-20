@@ -1,4 +1,0 @@
-row_id,age,email,name
-datatypes,int,string,string
-1,100,xyz@.com,yes
-2,1,x@.com,no

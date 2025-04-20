@@ -29,9 +29,11 @@ impl BloomFilter {
     }
 
     fn hash1(item: &str) -> usize {
-        let mut hash = 5381;
+        let mut hash: usize = 5381;
         for byte in item.bytes() {
-            hash = ((hash << 5) + hash) + (byte as usize);
+            hash = hash.wrapping_shl(5)
+                       .wrapping_add(hash)
+                       .wrapping_add(byte as usize);
         }
         hash
     }

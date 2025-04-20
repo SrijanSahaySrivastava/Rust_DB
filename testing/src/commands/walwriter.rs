@@ -1,8 +1,8 @@
-use std::sync::mpsc::{channel, Sender, Receiver};
-use std::thread;
-use std::time::{Duration, Instant};
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::thread;
+use std::time::{Duration, Instant};
 
 pub struct WalWriter {
     sender: Sender<String>,
@@ -19,7 +19,10 @@ impl WalWriter {
         let (sender, receiver) = channel();
         (
             WalWriter { sender },
-            WalWriterHandle { receiver, batch_interval },
+            WalWriterHandle {
+                receiver,
+                batch_interval,
+            },
         )
     }
 
@@ -39,15 +42,12 @@ impl WalWriterHandle {
                     Ok(op) => buffer.push(op),
                     Err(_) => {
                         // Timeout expired: time to flush the current batch.
-                    },
+                    }
                 }
 
                 if last_flush.elapsed() >= self.batch_interval || buffer.len() >= 10 {
                     if !buffer.is_empty() {
-                        let file = OpenOptions::new()
-                            .append(true)
-                            .create(true)
-                            .open(&wal_file);
+                        let file = OpenOptions::new().append(true).create(true).open(&wal_file);
                         if let Ok(file) = file {
                             let mut writer = BufWriter::new(file);
                             for op in &buffer {
