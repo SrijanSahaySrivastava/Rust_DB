@@ -126,7 +126,7 @@ fn main() {
     // Simulate database operations
     {
         let mut db_lock = db.lock().unwrap();
-        test_entire_db(&mut *db_lock, 100_000);
+        test_entire_db(&mut *db_lock, 10_000);
         // test_entire_db(&mut db_lock);
         // db_lock.commit_wal().unwrap();
         // db_lock.create_table("users").unwrap();

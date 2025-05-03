@@ -13,6 +13,9 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 use thiserror::Error;
 
+use csv::{ReaderBuilder, WriterBuilder}; // ← new
+use std::error::Error;
+
 #[derive(Error, Debug)]
 pub enum DatabaseError {
     #[error("Table '{0}' already exists.")]
@@ -122,40 +125,36 @@ impl Database {
 
     // New helper function to load table from CSV file into memory.
     pub fn load_table_from_file(&mut self, table_name: &str, file_name: &str) -> Result<()> {
-        let file = File::open(file_name)
+        let mut rdr = ReaderBuilder::new()
+            .has_headers(true)
+            .from_path(file_name)
             .map_err(|e| DatabaseError::FileCreationError(file_name.to_string(), e.to_string()))?;
-        let reader = BufReader::new(file);
-        let mut lines = reader.lines();
-        // Read header line.
-        if let Some(Ok(header_line)) = lines.next() {
-            let headers: Vec<String> = header_line.split(',').map(|s| s.to_string()).collect();
-            let mut table = Table::new();
-            // Add columns if header has more than one value.
-            if headers.len() > 1 {
-                for col in headers.iter().skip(1) {
-                    table.add_column(col);
-                }
-            }
-            // Process rows.
-            for line in lines {
-                if let Ok(row_line) = line {
-                    let values: Vec<&str> = row_line.split(',').collect();
-                    if let Some((row_id, row_values)) = values.split_first() {
-                        let mut data = HashMap::new();
-                        for (col, val) in headers.iter().skip(1).zip(row_values.iter()) {
-                            data.insert(col.to_string(), (*val).to_string());
-                        }
-                        table.insert_row(row_id, data);
-                    }
-                }
-            }
-            self.tables.insert(table_name.to_string(), table);
-            println!("Loaded table '{}' from file '{}'", table_name, file_name);
-            Ok(())
-        } else {
-            println!("File '{}' is empty.", file_name);
-            Err(DatabaseError::TableDoesNotExist(table_name.to_string()))
+
+        let headers = rdr
+            .headers()
+            .map_err(|e| DatabaseError::FileCreationError(file_name.to_string(), e.to_string()))?
+            .clone();
+
+        let mut table = Table::new();
+        // add columns
+        for hdr in headers.iter().skip(1) {
+            table.add_column(hdr);
         }
+
+        for result in rdr.records() {
+            let record = result.map_err(|e| {
+                DatabaseError::FileCreationError(file_name.to_string(), e.to_string())
+            })?;
+            let row_id = &record[0];
+            let mut data = HashMap::new();
+            for (hdr, field) in headers.iter().skip(1).zip(record.iter().skip(1)) {
+                data.insert(hdr.to_string(), field.to_string());
+            }
+            table.insert_row(row_id, data);
+        }
+        self.tables.insert(table_name.to_string(), table);
+        println!("Loaded table '{}' from '{}'", table_name, file_name);
+        Ok(())
     }
 
     // Add a column: log and update in-memory.
@@ -568,129 +567,120 @@ impl Database {
         table_name: &str,
         file_name: &str,
     ) -> Result<Vec<String>> {
-        if let Some(table) = self.tables.get(table_name) {
-            // Get columns sorted.
-            let mut columns_in_order: Vec<_> = table.columns.iter().cloned().collect();
-            columns_in_order.sort();
+        let table = self
+            .tables
+            .get(table_name)
+            .ok_or(DatabaseError::TableDoesNotExist(table_name.to_string()))?;
 
-            let path = Path::new(file_name);
-            let mut writer: BufWriter<Box<dyn Write>>;
+        // collect sorted columns
+        let mut cols: Vec<_> = table.columns.iter().cloned().collect();
+        cols.sort();
 
-            if path.exists() {
-                // Open in append mode.
-                let file = OpenOptions::new()
-                    .append(true)
-                    .open(file_name)
-                    .map_err(|e| {
-                        DatabaseError::FileCreationError(file_name.to_string(), e.to_string())
-                    })?;
-                writer = BufWriter::new(Box::new(file));
-            } else {
-                // Create new file and write header.
-                let file = File::create(file_name).map_err(|e| {
-                    DatabaseError::FileCreationError(file_name.to_string(), e.to_string())
-                })?;
-                writer = BufWriter::new(Box::new(file));
-                let header = {
-                    let mut hdr = vec!["row_id".to_string()];
-                    hdr.extend(columns_in_order.iter().cloned());
-                    hdr.join(",")
-                };
-                writeln!(writer, "{}", header).unwrap();
-            }
-
-            // Get only the unsaved rows.
-            let unsaved_rows: Vec<(&String, &HashMap<String, String>)> = table
-                .rows
-                .iter()
-                .skip(self.saved_row_count)
-                .filter(|(row_id, _)| *row_id != "datatypes")
-                .collect();
-
-            for (row_id, row_data) in unsaved_rows.iter() {
-                let mut row_vec = vec![(*row_id).clone()];
-                for col in &columns_in_order {
-                    row_vec.push(row_data.get(col).cloned().unwrap_or_default());
-                }
-                writeln!(writer, "{}", row_vec.join(",")).unwrap();
-            }
-            writer.flush().unwrap();
-
-            // Update the saved row count.
-            self.saved_row_count = table.rows.len();
-            println!(
-                "Table '{}' appended to '{}' with {} new rows.",
-                table_name,
-                file_name,
-                unsaved_rows.len()
-            );
-            Ok(vec![table_name.to_string(), file_name.to_string()])
+        // open CSV writer (append or new with header)
+        let path = Path::new(file_name);
+        let file = if path.exists() {
+            OpenOptions::new().append(true).open(file_name)
         } else {
-            error!("Table '{}' does not exist.", table_name);
-            Err(DatabaseError::TableDoesNotExist(table_name.to_string()))
+            OpenOptions::new().write(true).create(true).open(file_name)
         }
+        .map_err(|e| DatabaseError::FileCreationError(file_name.to_string(), e.to_string()))?;
+
+        let mut wtr = if path.exists() {
+            WriterBuilder::new().has_headers(false).from_writer(file)
+        } else {
+            let mut w = WriterBuilder::new().has_headers(true).from_writer(file);
+            let mut header_rec = vec!["row_id".to_string()];
+            header_rec.extend(cols.clone());
+            w.write_record(&header_rec).map_err(|e| {
+                DatabaseError::FileCreationError(file_name.to_string(), e.to_string())
+            })?;
+            w
+        };
+
+        let unsaved: Vec<_> = table
+            .rows
+            .iter()
+            .skip(self.saved_row_count)
+            .filter(|(rid, _)| rid.as_str() != "datatypes")
+            .collect();
+        let unsaved_count = unsaved.len();
+
+        for (row_id, row_data) in unsaved {
+            let mut rec = vec![row_id.clone()];
+            rec.extend(
+                cols.iter()
+                    .map(|c| row_data.get(c).cloned().unwrap_or_default()),
+            );
+            wtr.write_record(&rec).map_err(|e| {
+                DatabaseError::FileCreationError(file_name.to_string(), e.to_string())
+            })?;
+        }
+        wtr.flush()
+            .map_err(|e| DatabaseError::FileCreationError(file_name.to_string(), e.to_string()))?;
+
+        self.saved_row_count = table.rows.len();
+        println!(
+            "Table '{}' appended to '{}' ({} new rows).",
+            table_name, file_name, unsaved_count
+        );
+        Ok(vec![table_name.to_string(), file_name.to_string()])
     }
 
     // Save the table to a CSV file.
     pub fn save_table(&self, table_name: &str, file_name: &str) -> Result<Vec<String>> {
-        match self.tables.get(table_name) {
-            Some(table) => {
-                // Get columns sorted.
-                let mut columns_in_order: Vec<_> = table.columns.iter().cloned().collect();
-                columns_in_order.sort();
+        let table = self
+            .tables
+            .get(table_name)
+            .ok_or(DatabaseError::TableDoesNotExist(table_name.to_string()))?;
 
-                let file_result = File::create(file_name);
-                match file_result {
-                    Ok(file) => {
-                        let mut writer = BufWriter::new(file);
-                        // Write header.
-                        let header = {
-                            let mut hdr = vec!["row_id".to_string()];
-                            hdr.extend(columns_in_order.iter().cloned());
-                            hdr.join(",")
-                        };
-                        writeln!(writer, "{}", header).unwrap();
+        let mut cols: Vec<_> = table.columns.iter().cloned().collect();
+        cols.sort();
 
-                        // If a "datatypes" row exists, write it as the second row.
-                        if let Some(datatype_row) = table.rows.get("datatypes") {
-                            let mut row_vec = vec!["datatypes".to_string()];
-                            for col in &columns_in_order {
-                                row_vec.push(datatype_row.get(col).cloned().unwrap_or_default());
-                            }
-                            writeln!(writer, "{}", row_vec.join(",")).unwrap();
-                        }
+        let file = File::create(file_name)
+            .map_err(|e| DatabaseError::FileCreationError(file_name.to_string(), e.to_string()))?;
+        let mut wtr = WriterBuilder::new().has_headers(true).from_writer(file);
 
-                        // Write all other rows (exclude "datatypes").
-                        let mut rows: Vec<_> = table
-                            .rows
-                            .iter()
-                            .filter(|(row_id, _)| *row_id != "datatypes")
-                            .collect();
-                        rows.sort_by_key(|(row_id, _)| row_id.to_string());
-                        for (row_id, row_data) in rows {
-                            let mut row_vec = vec![row_id.clone()];
-                            for col in &columns_in_order {
-                                row_vec.push(row_data.get(col).cloned().unwrap_or_default());
-                            }
-                            writeln!(writer, "{}", row_vec.join(",")).unwrap();
-                        }
-                        println!("Table '{}' saved to '{}'.", table_name, file_name);
-                        Ok(vec![table_name.to_string(), file_name.to_string()])
-                    }
-                    Err(e) => {
-                        error!("Error creating file '{}': {}", file_name, e);
-                        Err(DatabaseError::FileCreationError(
-                            file_name.to_string(),
-                            e.to_string(),
-                        ))
-                    }
-                }
-            }
-            None => {
-                error!("Table '{}' does not exist.", table_name);
-                Err(DatabaseError::TableDoesNotExist(table_name.to_string()))
-            }
+        // header
+        let mut hdr = vec!["row_id".to_string()];
+        hdr.extend(cols.clone());
+        wtr.write_record(&hdr)
+            .map_err(|e| DatabaseError::FileCreationError(file_name.to_string(), e.to_string()))?;
+
+        // optional datatypes row
+        if let Some(dt_row) = table.rows.get("datatypes") {
+            let mut rec = vec!["datatypes".to_string()];
+            rec.extend(
+                cols.iter()
+                    .map(|c| dt_row.get(c).cloned().unwrap_or_default()),
+            );
+            wtr.write_record(&rec).map_err(|e| {
+                DatabaseError::FileCreationError(file_name.to_string(), e.to_string())
+            })?;
         }
+
+        // all other rows
+        let mut rows: Vec<_> = table
+            .rows
+            .iter()
+            .filter(|(rid, _)| rid.as_str() != "datatypes")
+            .collect();
+        rows.sort_by_key(|(rid, _)| rid.clone());
+
+        for (row_id, row_data) in rows {
+            let mut rec = vec![row_id.clone()];
+            rec.extend(
+                cols.iter()
+                    .map(|c| row_data.get(c).cloned().unwrap_or_default()),
+            );
+            wtr.write_record(&rec).map_err(|e| {
+                DatabaseError::FileCreationError(file_name.to_string(), e.to_string())
+            })?;
+        }
+        wtr.flush()
+            .map_err(|e| DatabaseError::FileCreationError(file_name.to_string(), e.to_string()))?;
+
+        println!("Table '{}' saved to '{}'.", table_name, file_name);
+        Ok(vec![table_name.to_string(), file_name.to_string()])
     }
 
     pub fn get_table(&self, table_name: &str) -> Result<&Table> {
